@@ -15,8 +15,10 @@ ART & DESIGN
 Purdymouf
 Arntoirus
 Shortman422
+notTooAlive
 Sharpy796
 Vexilus_
+Viowlet (Twitch Emotes, Sweatling Resources)
 [SPACE:2]
 SWEATLING & TWITCHBRIDGE
 All Cosmetic Creators (https://tinyurl.com/cosmetic-backlog)
@@ -38,6 +40,10 @@ Viowlet (Sweatling Resources)
 [SPACE:2]
 CHESTS ARE PRESENTS
 IndoorCat
+[SPACE:2]
+RETEXTURES
+notTooAlive
+Viowlet (Twitch Emotes)
 [SPACE:2]
 APOTIS TRIAL OF THE GODS
 APOTI (https://www.youtube.com/watch?v=RnTNqB_qjMc)

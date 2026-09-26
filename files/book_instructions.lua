@@ -62,10 +62,10 @@ return {
             "",
             "Reskins",
             "Chests are presents.",
-            "Hamis recieved party hats.",
+            "Sweatling backgrounds and various",
+            "retextures of enemies.",
             "",
-            "Custom Credits",
-            "custom end credits."
+            "Custom end Credits"
         }
     },
     {
@@ -76,7 +76,13 @@ return {
             "",
             "Its Sampo requirement can",
             "be changed in the birthday",
-            "mod settings."
+            "mod settings.",
+            "",
+            "Please levitate while starting the",
+            "Trial of the Gods.",
+            "",
+            "Designers Note: Turn Cosmetic",
+            "Particels to 0%.",
         }
     }
 }

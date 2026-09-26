@@ -1,5 +1,5 @@
 <Entity name="totg_trial_start_prompt" tags="totg_arena_start_prompt">
   <SpriteComponent image_file="mods/recocards_birthday/files/trial_of_the_gods/files/graphics/trial_start_marker.png" offset_x="14" offset_y="15" emissive="1" alpha="1" update_transform="1" />
-  <InteractableComponent radius="34" ui_text="Start Trial of the Gods" name="totg_trial_start" exclusivity_group="73" />
+  <InteractableComponent radius="34" ui_text="Start Trial of the Gods - Please Levitate" name="totg_trial_start" exclusivity_group="73" />
   <LuaComponent script_interacting="mods/recocards_birthday/files/trial_of_the_gods/files/trial/start_interact.lua" execute_every_n_frame="-1" />
 </Entity>

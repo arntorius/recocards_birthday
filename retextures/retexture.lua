@@ -5,46 +5,24 @@ local my_textures = {
     "teleport_center.png",
     "handgun.png",
     "bomb_wand.png",
-    "heart_extrahp.png",
-    "heart.png",
-    "spelL_refresh.png",
-    "spark.png",
-    "spitter.png",
     "bouncy_orb.png",
-    "rubber_ball.png",
-    "tnt.png",
     "bat.png",
     "slimeshooter.png",
-    "shotgunner.png",
     "fish_01.png",
     "firebug.png",
-    "miner.png",
-    "rat.png",
-    "iceskull.png",
-    "scavenger_smg.png"
+    "iceskull.png"
 }
 
 local target_xml_files = {
     "data/buildings_gfx/teleport_center.xml",
     "data/items_gfx/handgun.xml",
     "data/items_gfx/bomb_wand.xml",
-    "data/items_gfx/heart_extrahp.xml",
-    "data/items_gfx/heart.xml",
-    "data/items_gfx/spelL_refresh.xml",
-    "data/projectiles_gfx/spark.xml",
-    "data/projectiles_gfx/spitter.xml",
-    "data/projectiles_gfx/bouncy_orb.xml",
-    "data/projectiles_gfx/rubber_ball.xml",
-    "data/projectiles_gfx/tnt.xml",
     "data/enemies_gfx/bat.xml",
     "data/enemies_gfx/slimeshooter.xml",
     "data/enemies_gfx/shotgunner.xml",
     "data/enemies_gfx/fish_01.xml",
     "data/enemies_gfx/firebug.xml",
-    "data/enemies_gfx/miner.xml",
-    "data/enemies_gfx/rat.xml",
     "data/enemies_gfx/iceskull.xml",
-    "data/enemies_gfx/scavenger_smg.xml"
 }
 
 local function apply_retextures()
