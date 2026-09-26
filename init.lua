@@ -82,6 +82,7 @@ end
 -- === end Moist Mobbing wiring ================================================
 
 function OnModInit()
+    dofile_once("mods/recocards_birthday/retextures/apply_retextures.lua")
     ModDevGenerateSpriteUVsForDirectory("mods/recocards_birthday/data/enemies_gfx/player.png")
     BirthdayCredits_OnModInit()
     RhythmArcade_OnModInit()
