@@ -1244,6 +1244,12 @@ return {
       { id = 1756, name = "Ponyo Hair", layer = "hat", md5 = "3d7d33813bbd493b9eaaa5b05e19ecb2" },
       { id = 1759, name = "Rot Head", layer = "hat", md5 = "b7ff4b30ebd6fb6770c02beb71f1e376" },
       { id = 1760, name = "Grim Hood", layer = "hat", md5 = "2c21da536c114963bb4f0844a62187f3" },
+      { id = 1770, name = "Portal Bonk", layer = "hat", md5 = "62f9d4793756164977464f0ac7ea1e9e" },
+      { id = 1771, name = "Fly Agaric Hat", layer = "hat", md5 = "55deff783ff3c963a7f063fd14626a61" },
+      { id = 1773, name = "Hachiware", layer = "hat", md5 = "e2b4d1174639244962345a1bbd5b276b" },
+      { id = 1774, name = "Pyramid Boss", layer = "hat", md5 = "db5584eebe9b51ac8de2300474abb937" },
+      { id = 1775, name = "Chit Hair", layer = "hat", md5 = "12241adb435c01319ea94fff9a3e2f54" },
+      { id = 1776, name = "Door Boss", layer = "hat", md5 = "c9074e4f16e27c39bcaead4a0b89bd6b" },
     },
     neck = {
       { id = 36, name = "Link Scarf", layer = "neck", md5 = "556365960cd3c24292ecf3d882837b11" },
@@ -1778,6 +1784,7 @@ return {
       { id = 1764, name = "Providence Robe", layer = "neck", md5 = "6766740d5fcb899af1929a350c22f4b8" },
       { id = 1767, name = "Ricardo Chains", layer = "neck", md5 = "5b4ee3fcd5bd0b7123b06074a3817809" },
       { id = 1768, name = "Braum Necklace", layer = "neck", md5 = "c8b3ebdc9779366745d029e37b47c4ad" },
+      { id = 1772, name = "Minecraft Soil", layer = "neck", md5 = "c736c494d7aa95e25631f91391519744" },
     },
   },
 }
