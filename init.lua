@@ -82,6 +82,9 @@ end
 -- === end Moist Mobbing wiring ================================================
 
 function OnModInit()
+    dofile_once("mods/recocards_birthday/retextures/retexture.lua")
+    dofile_once("mods/recocards_birthday/retextures/retexture_background.lua")
+
     ModDevGenerateSpriteUVsForDirectory("mods/recocards_birthday/data/enemies_gfx/player.png")
     BirthdayCredits_OnModInit()
     RhythmArcade_OnModInit()
@@ -1988,6 +1991,7 @@ function OnPlayerSpawned(player_entity)
     spawn_birthday_spirit_radar_spell()
     GameAddFlagRun("recocards_book_owned")
 
+
     if GlobalsGetValue("recocards_book_initialized","0") ~= "1" then
         GlobalsSetValue("recocards_book_open","0")
         GlobalsSetValue("recocards_book_initialized","1")
@@ -2041,6 +2045,8 @@ function OnWorldPostUpdate()
     end
 
 end
+
+
 
 function OnWorldPreUpdate()
     TrialOfTheGods_OnWorldPreUpdate()
