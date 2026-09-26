@@ -35,12 +35,19 @@
   "dedupeNestedCards": true,
   "animationDetectionSamples": 2,
   "animationDetectionDelayMs": 180,
-  "animationFps": 6,
-  "animationDurationSeconds": 3,
-  "maxAnimationFrames": 18,
+  "animationFps": 8,
+  "animationDurationSeconds": 3.5,
+  "maxAnimationFrames": 28,
   "reuseCachedCards": true,
   "waitAfterLegacyBoardClickMs": 3500,
   "legacyScrollMaxPasses": 50,
   "legacyScrollPauseMs": 350,
-  "legacyScrollFinalWaitMs": 1500
+  "legacyScrollFinalWaitMs": 1500,
+  "animationOverrides": {
+    "Viowlet": {
+      "animationFps": 8,
+      "animationDurationSeconds": 6.25,
+      "maxAnimationFrames": 50
+    }
+  }
 }

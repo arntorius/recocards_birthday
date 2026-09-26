@@ -219,12 +219,63 @@ async function plausible(page, selector, c) {
         .filter(Boolean);
       const author = textLines.length ? textLines[0] : "Birthday Spirit";
       const imgCount = await el.locator("img").count().catch(() => 0);
+      const mediaUrls = await el.locator("img,video,source").evaluateAll(nodes =>
+        nodes
+          .flatMap(node => [
+            node.currentSrc || "",
+            node.src || "",
+            node.getAttribute("src") || "",
+            node.getAttribute("poster") || ""
+          ])
+          .filter(Boolean)
+      ).catch(() => []);
 
       const links = await el.locator("a[href]").evaluateAll(nodes =>
         nodes
           .map(node => node.href || node.getAttribute("href") || "")
           .filter(Boolean)
       ).catch(() => []);
+
+      const ancestorContext = await el.evaluate(node => {
+        const texts = [];
+        const media = [];
+        const seenText = new Set();
+        const seenMedia = new Set();
+        let current = node.parentElement;
+
+        for (let depth = 0; current && depth < 12; depth++, current = current.parentElement) {
+          if (current === document.body || current === document.documentElement) break;
+
+          const rect = current.getBoundingClientRect();
+          if (
+            rect.width < 120 || rect.height < 60 ||
+            rect.width > 1000 || rect.height > 1800
+          ) continue;
+
+          const t = String(current.innerText || "").replace(/\s+/g, " ").trim();
+          if (t && t.length <= 12000 && !seenText.has(t)) {
+            seenText.add(t);
+            texts.push(t);
+          }
+
+          for (const mediaNode of current.querySelectorAll("img,video,source")) {
+            const values = [
+              mediaNode.currentSrc || "",
+              mediaNode.src || "",
+              mediaNode.getAttribute("src") || "",
+              mediaNode.getAttribute("poster") || ""
+            ];
+
+            for (const value of values) {
+              if (!value || seenMedia.has(value)) continue;
+              seenMedia.add(value);
+              media.push(value);
+            }
+          }
+        }
+
+        return { texts, media };
+      }).catch(() => ({ texts: [], media: [] }));
 
       if (text.length < 2 && imgCount === 0) continue;
 
@@ -235,7 +286,10 @@ async function plausible(page, selector, c) {
         rawText,
         author,
         links,
-        imgCount
+        imgCount,
+        mediaUrls,
+        ancestorTexts: ancestorContext.texts,
+        ancestorMediaUrls: ancestorContext.media
       });
     } catch (_) {}
   }
@@ -554,9 +608,74 @@ async function discoverBoardPosts(page, networkCaptured) {
 }
 
 function compareDataPostsToDom(posts, domCandidates) {
+  const mediaKey = value => {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) return "";
+    try {
+      const u = new URL(raw);
+      return decodeURIComponent(u.pathname).replace(/\/+$/,"");
+    } catch (_) {
+      return raw.split(/[?#]/)[0];
+    }
+  };
+
+  const mediaName = value => {
+    const key = mediaKey(value);
+    if (!key) return "";
+    const parts = key.split("/");
+    return parts[parts.length - 1] || key;
+  };
+
+  const messageProbes = value => {
+    const message = normalizeMatchText(value);
+    if (!message) return [];
+
+    const sizes = message.length >= 300 ? 80 : 100;
+    const maxStart = Math.max(0, message.length - sizes);
+    const starts = [
+      0,
+      Math.floor(maxStart * 0.5),
+      maxStart
+    ];
+
+    const probes = [];
+    const seen = new Set();
+
+    for (const start of starts) {
+      const probe = message.slice(start, start + sizes).trim();
+      if (probe.length < 12 || seen.has(probe)) continue;
+      seen.add(probe);
+      probes.push(probe);
+    }
+
+    return probes;
+  };
+
+  const tokenOverlap = (a, b) => {
+    if (!a || !b) return 0;
+
+    const tokensA = new Set(a.split(" ").filter(x => x.length >= 4));
+    const tokensB = new Set(b.split(" ").filter(x => x.length >= 4));
+
+    if (!tokensA.size || !tokensB.size) return 0;
+
+    let common = 0;
+    for (const token of tokensA) {
+      if (tokensB.has(token)) common++;
+    }
+
+    return common / Math.min(tokensA.size, tokensB.size);
+  };
+
   const dom = (domCandidates || []).map((x, idx) => ({
     idx,
     text: normalizeMatchText(x.text),
+    texts: [x.text, ...(x.ancestorTexts || [])]
+      .map(normalizeMatchText)
+      .filter(Boolean),
+    media: [...(x.mediaUrls || []), ...(x.ancestorMediaUrls || [])]
+      .map(mediaKey)
+      .filter(Boolean),
     raw: x
   }));
 
@@ -565,34 +684,68 @@ function compareDataPostsToDom(posts, domCandidates) {
   for (let i = 0; i < posts.length; i++) {
     const post = posts[i];
     const fp = postFingerprint(post);
+    const author = normalizeMatchText(post.author || "");
+    const message = normalizeMatchText(post.message || "");
+    const probes = messageProbes(message);
+    const postMedia = mediaKey(post.media || "");
 
     let best = null;
     let bestScore = 0;
 
     for (const candidate of dom) {
-      if (!candidate.text || !fp) continue;
+      if (!candidate.texts.length && !candidate.media.length) continue;
 
       let score = 0;
 
-      if (candidate.text === fp) {
-        score = 1000;
-      } else if (
-        candidate.text.includes(fp) ||
-        fp.includes(candidate.text)
-      ) {
-        const shorter = Math.min(candidate.text.length, fp.length);
-        const longer = Math.max(candidate.text.length, fp.length);
-        score = 700 + (shorter / Math.max(1, longer)) * 200;
-      } else {
-        const author = normalizeMatchText(post.author || "");
-        const message = normalizeMatchText(post.message || "");
+      for (const candidateText of candidate.texts) {
+        let textScore = 0;
 
-        if (author && candidate.text.includes(author)) score += 250;
+        if (fp && candidateText === fp) {
+          textScore = 1000;
+        } else if (
+          fp &&
+          (candidateText.includes(fp) || fp.includes(candidateText))
+        ) {
+          const shorter = Math.min(candidateText.length, fp.length);
+          const longer = Math.max(candidateText.length, fp.length);
+          textScore = 700 + (shorter / Math.max(1, longer)) * 200;
+        } else {
+          if (author && candidateText.includes(author)) {
+            textScore += 250;
+          }
 
-        if (message) {
-          const probe = message.slice(0, Math.min(100, message.length));
-          if (probe.length >= 12 && candidate.text.includes(probe)) {
-            score += 500;
+          if (message) {
+            let matchedProbes = 0;
+            for (const probe of probes) {
+              if (candidateText.includes(probe)) matchedProbes++;
+            }
+
+            if (matchedProbes > 0) {
+              textScore += 500 + Math.min(200, (matchedProbes - 1) * 100);
+            } else if (message.length >= 160) {
+              const overlap = tokenOverlap(message, candidateText);
+              if (overlap >= 0.45) {
+                textScore += 350 + Math.min(150, Math.round((overlap - 0.45) * 500));
+              }
+            }
+          }
+        }
+
+        if (textScore > score) score = textScore;
+      }
+
+      if (postMedia && candidate.media.length) {
+        const postName = mediaName(postMedia);
+        for (const candidateMedia of candidate.media) {
+          const candidateName = mediaName(candidateMedia);
+          if (
+            candidateMedia === postMedia ||
+            candidateMedia.includes(postMedia) ||
+            postMedia.includes(candidateMedia) ||
+            (postName && candidateName && postName === candidateName)
+          ) {
+            score += 700;
+            break;
           }
         }
       }
@@ -611,6 +764,50 @@ function compareDataPostsToDom(posts, domCandidates) {
         : null,
       score: Math.round(bestScore)
     });
+  }
+
+  const reliable = rows
+    .filter(row => row.matchedDomIndex !== null && row.score >= 300)
+    .sort((a, b) => a.dataIndex - b.dataIndex);
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (row.matchedDomIndex !== null) continue;
+
+    let before = null;
+    let after = null;
+
+    for (const candidate of reliable) {
+      if (candidate.dataIndex < row.dataIndex) before = candidate;
+      if (candidate.dataIndex > row.dataIndex) {
+        after = candidate;
+        break;
+      }
+    }
+
+    if (!before || !after) continue;
+
+    const dataGap = after.dataIndex - before.dataIndex;
+    const domGap = after.matchedDomIndex - before.matchedDomIndex;
+
+    if (dataGap !== domGap || dataGap <= 1) continue;
+
+    const offset = row.dataIndex - before.dataIndex;
+    const inferredDomIndex = before.matchedDomIndex + offset;
+
+    if (inferredDomIndex <= 0 || inferredDomIndex > dom.length) continue;
+
+    const alreadyUsed = rows.some(
+      other =>
+        other !== row &&
+        other.matchedDomIndex === inferredDomIndex &&
+        other.score >= 300
+    );
+
+    if (alreadyUsed) continue;
+
+    row.matchedDomIndex = inferredDomIndex;
+    row.score = 299;
   }
 
   return rows;
@@ -1326,35 +1523,165 @@ function frameFilename(id, frame) {
   return `card_${id}_f${String(frame).padStart(3, "0")}.png`;
 }
 
+
+async function resolveCardCaptureRoot(page, el, token, post) {
+  const attr = "data-recocards-capture-root";
+  await page.locator(`[${attr}]`).evaluateAll(nodes =>
+    nodes.forEach(node => node.removeAttribute(attr))
+  ).catch(() => {});
+
+  const found = await el.evaluate((node, args) => {
+    const norm = value => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const author = norm(args.author);
+    const message = norm(args.message);
+    const probeSize = message.length >= 300 ? 80 : 120;
+    const maxStart = Math.max(0, message.length - probeSize);
+    const probeStarts = [0, Math.floor(maxStart * 0.5), maxStart];
+    const probes = [];
+    const seenProbes = new Set();
+
+    for (const start of probeStarts) {
+      const probe = message.slice(start, start + probeSize).trim();
+      if (probe.length < 8 || seenProbes.has(probe)) continue;
+      seenProbes.add(probe);
+      probes.push(probe);
+    }
+
+    let current = node;
+    let best = node;
+    let bestScore = -1e9;
+
+    for (let depth = 0; current && depth < 12; depth++, current = current.parentElement) {
+      if (current === document.body || current === document.documentElement) break;
+
+      const rect = current.getBoundingClientRect();
+      if (
+        rect.width < 120 || rect.height < 60 ||
+        rect.width > 1000 || rect.height > 1800
+      ) continue;
+
+      const style = getComputedStyle(current);
+      const text = norm(current.innerText);
+      const mediaCount = current.querySelectorAll("img,video,canvas").length;
+      const bg = style.backgroundColor || "";
+      const hasBg =
+        style.backgroundImage !== "none" ||
+        (bg && bg !== "transparent" && bg !== "rgba(0, 0, 0, 0)");
+      const radius = parseFloat(style.borderRadius || "0") || 0;
+
+      let score = 0;
+      if (author && text.includes(author)) score += 900;
+
+      let matchedProbes = 0;
+      for (const probe of probes) {
+        if (text.includes(probe)) matchedProbes++;
+      }
+
+      if (matchedProbes > 0) {
+        score += 1100 + Math.min(300, (matchedProbes - 1) * 150);
+      }
+
+      if (mediaCount > 0) score += 180;
+      if (hasBg) score += 260;
+      if (radius > 0) score += 80;
+      score -= depth * 5;
+      score -= Math.max(0, mediaCount - 4) * 80;
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = current;
+      }
+    }
+
+    best.setAttribute(args.attr, args.token);
+    return true;
+  }, {
+    attr,
+    token: String(token),
+    author: post?.author || "",
+    message: post?.message || ""
+  }).catch(() => false);
+
+  if (!found) return el;
+  return page.locator(`[${attr}="${String(token)}"]`).first();
+}
+
+async function prepareTransparentCapture(el) {
+  await el.evaluate(node => {
+    document.documentElement.style.background = "transparent";
+    if (document.body) document.body.style.background = "transparent";
+    let parent = node.parentElement;
+    while (parent) {
+      parent.style.background = "transparent";
+      parent.style.backgroundColor = "transparent";
+      parent.style.backgroundImage = "none";
+      parent = parent.parentElement;
+    }
+  });
+}
+
 async function detectAnimation(el, c) {
   const samples = Math.max(2, Number(c.animationDetectionSamples) || 3);
   const delay = Math.max(50, Number(c.animationDetectionDelayMs) || 250);
 
-  const hashes = [];
+  let firstHash = null;
 
   for (let i = 0; i < samples; i++) {
-    const shot = await el.screenshot({ type: "png" });
-    hashes.push(hashBuffer(shot));
+    const shot = await el.screenshot({ type: "png", omitBackground: true });
+    const hash = hashBuffer(shot);
+
+    if (firstHash === null) {
+      firstHash = hash;
+    } else if (hash !== firstHash) {
+      return true;
+    }
 
     if (i + 1 < samples) {
       await sleep(delay);
     }
   }
 
-  return new Set(hashes).size > 1;
+  return false;
 }
 
-async function captureAnimatedFrames(el, id, c, captureScale) {
-  const fps = Math.max(1, Number(c.animationFps) || 8);
-  const duration = Math.max(0.5, Number(c.animationDurationSeconds) || 3);
-  const maxFrames = Math.max(2, Number(c.maxAnimationFrames) || 24);
+function getAnimationCaptureConfig(c, author) {
+  const baseFps = Math.max(1, Number(c.animationFps) || 8);
+  const baseDuration = Math.max(0.5, Number(c.animationDurationSeconds) || 3);
+  const baseMaxFrames = Math.max(2, Number(c.maxAnimationFrames) || 24);
+  const normalizedAuthor = String(author || "").trim().toLowerCase();
+  const overrides = c && typeof c.animationOverrides === "object" && c.animationOverrides
+    ? c.animationOverrides
+    : null;
 
-  const frameCount = Math.max(
-    2,
-    Math.min(maxFrames, Math.round(fps * duration))
-  );
+  if (overrides) {
+    for (const [name, value] of Object.entries(overrides)) {
+      if (String(name || "").trim().toLowerCase() !== normalizedAuthor) continue;
+      const fps = Math.max(1, Number(value.animationFps) || baseFps);
+      const duration = Math.max(0.5, Number(value.animationDurationSeconds) || baseDuration);
+      const maxFrames = Math.max(2, Number(value.maxAnimationFrames) || baseMaxFrames);
+      return {
+        fps,
+        duration,
+        maxFrames,
+        frameCount: Math.max(2, Math.min(maxFrames, Math.round(fps * duration)))
+      };
+    }
+  }
 
-  const delay = Math.max(20, Math.round(1000 / fps));
+  return {
+    fps: baseFps,
+    duration: baseDuration,
+    maxFrames: baseMaxFrames,
+    frameCount: Math.max(2, Math.min(baseMaxFrames, Math.round(baseFps * baseDuration)))
+  };
+}
+
+async function captureAnimatedFrames(el, id, c, captureScale, author) {
+  const animCfg = getAnimationCaptureConfig(c, author);
+  const fps = animCfg.fps;
+  const frameCount = animCfg.frameCount;
+
+  const frameInterval = Math.max(20, 1000 / fps);
   const files = [];
 
   let box = await el.boundingBox();
@@ -1362,18 +1689,25 @@ async function captureAnimatedFrames(el, id, c, captureScale) {
     throw new Error("Animated card lost its bounding box.");
   }
 
+  const captureStart = Date.now();
+
   for (let frame = 1; frame <= frameCount; frame++) {
     const filename = frameFilename(id, frame);
 
     await el.screenshot({
       path: path.join(OUT, filename),
-      type: "png"
+      type: "png",
+      omitBackground: true
     });
 
     files.push(filename);
 
     if (frame < frameCount) {
-      await sleep(delay);
+      const targetTime = captureStart + frame * frameInterval;
+      const remaining = Math.round(targetTime - Date.now());
+      if (remaining > 0) {
+        await sleep(remaining);
+      }
     }
   }
 
@@ -1549,8 +1883,17 @@ function cleanup(validFiles) {
 
       for (let j = 0; j < captureTarget; j++) {
         const src = chosen.list[j];
-        const el = loc.nth(src.index);
+        const sourceEl = loc.nth(src.index);
+        const dataMatch = (dataDomComparison || []).find(
+          row => row.matchedDomIndex === j + 1
+        );
         const cardAuthor = authorForDomCard(src, j + 1, dataDomComparison);
+        const el = await resolveCardCaptureRoot(
+          page,
+          sourceEl,
+          `card-${j + 1}`,
+          dataMatch?.post || null
+        );
 
         try {
           await el.scrollIntoViewIfNeeded();
@@ -1603,9 +1946,12 @@ function cleanup(validFiles) {
             continue;
           }
 
+          await prepareTransparentCapture(el);
+
           await el.screenshot({
             path: path.join(OUT, staticFilename),
-            type: "png"
+            type: "png",
+            omitBackground: true
           });
 
           validFiles.push(staticFilename);
@@ -1621,7 +1967,8 @@ function cleanup(validFiles) {
           const shouldProbeAnimation =
             mediaHints.hasGifUrl ||
             mediaHints.hasVideo ||
-            mediaHints.hasCanvas;
+            mediaHints.hasCanvas ||
+            mediaHints.imageCount > 0;
 
           const animated = shouldProbeAnimation
             ? await detectAnimation(el, c)
@@ -1632,7 +1979,8 @@ function cleanup(validFiles) {
               el,
               id,
               c,
-              captureScale
+              captureScale,
+              cardAuthor
             );
 
             validFiles.push(...anim.files);
@@ -1650,7 +1998,7 @@ function cleanup(validFiles) {
             });
 
             reportLines.push(
-              `CARD ${j + 1} id=${id} animated=yes frames=${anim.frameCount} fps=${anim.fps}`
+              `CARD ${j + 1} id=${id} animated=yes frames=${anim.frameCount} fps=${anim.fps} author=${manifestSafe(cardAuthor)}`
             );
 
             console.log(
@@ -1670,7 +2018,7 @@ function cleanup(validFiles) {
             });
 
             reportLines.push(
-              `CARD ${j + 1} id=${id} animated=no`
+              `CARD ${j + 1} id=${id} animated=no author=${manifestSafe(cardAuthor)}`
             );
           }
         } catch (e) {
