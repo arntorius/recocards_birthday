@@ -45,9 +45,9 @@
   "legacyScrollFinalWaitMs": 1500,
   "animationOverrides": {
     "Viowlet": {
-      "animationFps": 8,
-      "animationDurationSeconds": 6.25,
-      "maxAnimationFrames": 50
+      "animationFps": 10,
+      "animationDurationSeconds": 6,
+      "maxAnimationFrames": 60
     }
   }
 }
