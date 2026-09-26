@@ -766,6 +766,19 @@ function compareDataPostsToDom(posts, domCandidates) {
     });
   }
 
+  const bestByDom = new Map();
+
+  for (const row of rows) {
+    if (row.matchedDomIndex === null || row.score < 300) continue;
+    const existing = bestByDom.get(row.matchedDomIndex);
+    if (!existing || row.score > existing.score) {
+      if (existing) existing.matchedDomIndex = null;
+      bestByDom.set(row.matchedDomIndex, row);
+    } else {
+      row.matchedDomIndex = null;
+    }
+  }
+
   const reliable = rows
     .filter(row => row.matchedDomIndex !== null && row.score >= 300)
     .sort((a, b) => a.dataIndex - b.dataIndex);
@@ -1534,6 +1547,7 @@ async function resolveCardCaptureRoot(page, el, token, post) {
     const norm = value => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
     const author = norm(args.author);
     const message = norm(args.message);
+    const expectsMedia = Boolean(args.media);
     const probeSize = message.length >= 300 ? 80 : 120;
     const maxStart = Math.max(0, message.length - probeSize);
     const probeStarts = [0, Math.floor(maxStart * 0.5), maxStart];
@@ -1560,6 +1574,9 @@ async function resolveCardCaptureRoot(page, el, token, post) {
         rect.width > 1000 || rect.height > 1800
       ) continue;
 
+      const sourceCount = current.querySelectorAll("[data-recocards-card-source]").length;
+      if (sourceCount > 1) continue;
+
       const style = getComputedStyle(current);
       const text = norm(current.innerText);
       const mediaCount = current.querySelectorAll("img,video,canvas").length;
@@ -1581,7 +1598,8 @@ async function resolveCardCaptureRoot(page, el, token, post) {
         score += 1100 + Math.min(300, (matchedProbes - 1) * 150);
       }
 
-      if (mediaCount > 0) score += 180;
+      if (mediaCount > 0) score += expectsMedia ? 680 : 180;
+      if (expectsMedia && mediaCount === 0) score -= 500;
       if (hasBg) score += 260;
       if (radius > 0) score += 80;
       score -= depth * 5;
@@ -1599,7 +1617,8 @@ async function resolveCardCaptureRoot(page, el, token, post) {
     attr,
     token: String(token),
     author: post?.author || "",
-    message: post?.message || ""
+    message: post?.message || "",
+    media: post?.media || ""
   }).catch(() => false);
 
   if (!found) return el;
@@ -1880,6 +1899,14 @@ function cleanup(validFiles) {
       });
 
       reportLines.push("");
+
+      await loc.evaluateAll((nodes, accepted) => {
+        nodes.forEach(node => node.removeAttribute("data-recocards-card-source"));
+        for (const item of accepted) {
+          const node = nodes[item.index];
+          if (node) node.setAttribute("data-recocards-card-source", String(item.order));
+        }
+      }, chosen.list.map((item, index) => ({ index: item.index, order: index + 1 }))).catch(() => {});
 
       for (let j = 0; j < captureTarget; j++) {
         const src = chosen.list[j];
