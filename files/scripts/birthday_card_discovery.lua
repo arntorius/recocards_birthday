@@ -1,7 +1,7 @@
 dofile_once("mods/recocards_birthday/files/scripts/util.lua")
 local RQ_BOOK_NOTES = dofile_once("mods/recocards_birthday/files/book_notes.lua") or {}
 
-function RQ_DiscoverBirthdayCard(id,author,acquisition)
+function RQ_DiscoverBirthdayCard(id,author,acquisition,silent)
     if id == nil or id == "" then return false end
 
     acquisition = acquisition == "kill" and "kill" or "pickup"
@@ -138,13 +138,15 @@ function RQ_DiscoverBirthdayCard(id,author,acquisition)
         tostring(note_index)
     )
 
-    GamePrintImportant(
-        (author or "Birthday Spirit") .. "'s Birthday Page",
-        tostring(found) ..
-        " / " ..
-        tostring(total) ..
-        " cards added to the book"
-    )
+    if not silent then
+        GamePrintImportant(
+            (author or "Birthday Spirit") .. "'s Birthday Page",
+            tostring(found) ..
+            " / " ..
+            tostring(total) ..
+            " cards added to the book"
+        )
+    end
 
     return true
 end

@@ -1502,24 +1502,43 @@ local function update_dev_tools()
         return
     end
 
+    if GuiButton(gui,7303,hx,hy+78,"DEV UNLOCK ALL BIRTHDAY CARDS") then
+        dofile_once("mods/recocards_birthday/files/scripts/birthday_card_discovery.lua")
+
+        local unlocked = 0
+
+        for _,card in ipairs(cards) do
+            if RQ_DiscoverBirthdayCard(card.id,card.author,"pickup",true) then
+                unlocked = unlocked + 1
+            end
+        end
+
+        GamePrintImportant(
+            "DEV unlock complete",
+            tostring(unlocked) .. " cards unlocked"
+        )
+
+        return
+    end
+
     local target = nearest_undiscovered_card()
 
     if target == nil then
-        GuiText(gui,hx,hy+78,"DEV: no undiscovered cards")
+        GuiText(gui,hx,hy+94,"DEV: no undiscovered cards")
         return
     end
 
     GuiText(
         gui,
         hx,
-        hy+78,
+        hy+94,
         "DEV next card: " ..
         tostring(math.floor(target.x)) .. ", " ..
         tostring(math.floor(target.y)) ..
         "  distance " .. tostring(math.floor(math.sqrt(target.d2)))
     )
 
-    if GuiButton(gui,7301,hx,hy+90,"DEV TELEPORT TO NEXT CARD") then
+    if GuiButton(gui,7301,hx,hy+106,"DEV TELEPORT TO NEXT CARD") then
         EntitySetTransform(target.player,target.x,target.y-40)
         GameSetCameraPos(target.x,target.y-40)
         GamePrintImportant(

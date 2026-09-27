@@ -33,8 +33,8 @@
   ],
   "captureScale": 2,
   "dedupeNestedCards": true,
-  "animationDetectionSamples": 2,
-  "animationDetectionDelayMs": 180,
+  "animationDetectionSamples": 4,
+  "animationDetectionDelayMs": 350,
   "animationFps": 8,
   "animationDurationSeconds": 3.5,
   "maxAnimationFrames": 28,
@@ -45,6 +45,7 @@
   "legacyScrollFinalWaitMs": 1500,
   "animationOverrides": {
     "Viowlet": {
+      "forceAnimated": true,
       "animationFps": 10,
       "animationDurationSeconds": 6,
       "maxAnimationFrames": 60

@@ -151,36 +151,125 @@ function candidateQuality(c) {
 }
 
 function dedupeCandidates(list) {
-  const sorted = [...list].sort((a, b) => candidateQuality(b) - candidateQuality(a));
-  const kept = [];
   const rejected = [];
+  const kept = [];
+  let exactDuplicates = 0;
+  let nearDuplicates = 0;
 
-  for (const candidate of sorted) {
-    let duplicateOf = null;
+  const normalized = list.map(candidate => {
+    const value = normalizeMatchText(candidate.text || "");
+    return {
+      candidate,
+      value,
+      length: value.length
+    };
+  });
 
-    for (const existing of kept) {
-      const nested =
-        containsBox(existing.box, candidate.box) ||
-        containsBox(candidate.box, existing.box);
+  const relation = (a, b) => {
+    if (!a || !b) return null;
+    if (a === b) return "exact";
 
-      if (nested && textRelated(existing.text, candidate.text)) {
-        duplicateOf = existing;
+    const shorter = a.length <= b.length ? a : b;
+    const longer = a.length > b.length ? a : b;
+
+    if (shorter.length < 12) return null;
+    if (!longer.includes(shorter)) return null;
+
+    const delta = longer.length - shorter.length;
+    const ratio = shorter.length / Math.max(1, longer.length);
+
+    if (delta <= 90 && ratio >= 0.82) return "near";
+    return null;
+  };
+
+  const groups = [];
+
+  for (const item of normalized) {
+    let target = null;
+    let targetRelation = null;
+
+    for (const group of groups) {
+      for (const member of group.members) {
+        const rel = relation(item.value, member.value);
+        if (!rel) continue;
+        target = group;
+        targetRelation = rel;
         break;
       }
+      if (target) break;
     }
 
-    if (duplicateOf) {
-      rejected.push({
-        index: candidate.index,
-        reason: "nested DOM duplicate",
-        text: normalizeText(candidate.text).slice(0, 160)
+    if (!target) {
+      groups.push({
+        members: [item],
+        relations: []
       });
-    } else {
-      kept.push(candidate);
+      continue;
+    }
+
+    target.members.push(item);
+    target.relations.push(targetRelation);
+  }
+
+  const fullCardScore = item => {
+    const candidate = item.candidate;
+    const textLength = item.length;
+    const boxArea = Math.max(1, area(candidate.box));
+    const width = Math.max(1, candidate.box.width || 0);
+    const height = Math.max(1, candidate.box.height || 0);
+    const aspectPenalty = width > 0 && height / width > 4.5 ? 200000 : 0;
+
+    return (
+      (candidate.imgCount || 0) * 1000000 +
+      Math.min(boxArea, 900000) +
+      Math.min(textLength, 4000) * 100 -
+      aspectPenalty
+    );
+  };
+
+  for (const group of groups) {
+    if (group.members.length === 1) {
+      kept.push(group.members[0].candidate);
+      continue;
+    }
+
+    const sorted = [...group.members].sort(
+      (a, b) => fullCardScore(b) - fullCardScore(a)
+    );
+
+    const winner = sorted[0];
+    kept.push(winner.candidate);
+
+    for (const item of sorted.slice(1)) {
+      const rel = relation(item.value, winner.value) || "content";
+      if (rel === "exact") exactDuplicates++;
+      else nearDuplicates++;
+
+      const shorterLength = Math.min(item.value.length, winner.value.length);
+      const longerLength = Math.max(item.value.length, winner.value.length);
+      const ratio = longerLength > 0 ? shorterLength / longerLength : 0;
+
+      rejected.push({
+        index: item.candidate.index,
+        winnerIndex: winner.candidate.index,
+        reason: rel === "exact"
+          ? "exact card content duplicate"
+          : "same card content with short wrapper text",
+        ratio,
+        delta: longerLength - shorterLength,
+        text: normalizeText(item.candidate.text),
+        winnerText: normalizeText(winner.candidate.text)
+      });
     }
   }
 
   kept.sort((a, b) => a.index - b.index);
+
+  console.log(
+    `Content identity dedupe: raw=${list.length}, unique=${kept.length}, ` +
+    `exactDuplicates=${exactDuplicates}, nearDuplicates=${nearDuplicates}`
+  );
+
   return { kept, rejected };
 }
 
@@ -209,7 +298,17 @@ async function plausible(page, selector, c) {
       if (!b) continue;
 
       if (b.width < c.minimumCardWidth || b.height < c.minimumCardHeight) continue;
-      if (b.width > c.maximumCardWidth || b.height > c.maximumCardHeight) continue;
+
+      const configuredMaxWidth = Number(c.maximumCardWidth) || 1000;
+      const configuredMaxHeight = Number(c.maximumCardHeight) || 1000;
+      const tallCardMaxWidth = Math.min(520, configuredMaxWidth);
+      const isTallCard =
+        b.width <= tallCardMaxWidth &&
+        b.height > configuredMaxHeight &&
+        b.height <= 1800;
+
+      if (b.width > configuredMaxWidth) continue;
+      if (b.height > configuredMaxHeight && !isTallCard) continue;
 
       const rawText = await el.innerText().catch(() => "");
       const text = normalizeText(rawText);
@@ -297,11 +396,101 @@ async function plausible(page, selector, c) {
   return out;
 }
 
+async function dedupeDomContainedCandidates(page, selector, raw) {
+  if (!raw.length) return { kept: [], rejected: [] };
+
+  const indices = raw.map(x => x.index);
+  const relations = await page.locator(selector).evaluateAll((nodes, candidateIndices) => {
+    const result = [];
+
+    for (const outerIndex of candidateIndices) {
+      const outer = nodes[outerIndex];
+      if (!outer) continue;
+
+      const descendants = [];
+
+      for (const innerIndex of candidateIndices) {
+        if (innerIndex === outerIndex) continue;
+        const inner = nodes[innerIndex];
+        if (!inner) continue;
+        if (outer.contains(inner)) descendants.push(innerIndex);
+      }
+
+      if (descendants.length) {
+        result.push({ outerIndex, descendants });
+      }
+    }
+
+    return result;
+  }, indices).catch(() => []);
+
+  const byIndex = new Map(raw.map(x => [x.index, x]));
+  const parentFor = new Map();
+
+  for (const relation of relations) {
+    const outer = byIndex.get(relation.outerIndex);
+    if (!outer) continue;
+
+    for (const innerIndex of relation.descendants) {
+      const inner = byIndex.get(innerIndex);
+      if (!inner) continue;
+
+      const currentParentIndex = parentFor.get(innerIndex);
+      if (currentParentIndex === undefined) {
+        parentFor.set(innerIndex, relation.outerIndex);
+        continue;
+      }
+
+      const currentParent = byIndex.get(currentParentIndex);
+      if (!currentParent || area(outer.box) < area(currentParent.box)) {
+        parentFor.set(innerIndex, relation.outerIndex);
+      }
+    }
+  }
+
+  const rejectedIndices = new Set(parentFor.keys());
+  const kept = raw.filter(x => !rejectedIndices.has(x.index));
+  const rejected = [];
+
+  for (const [innerIndex, outerIndex] of parentFor.entries()) {
+    const inner = byIndex.get(innerIndex);
+    const outer = byIndex.get(outerIndex);
+    if (!inner || !outer) continue;
+
+    rejected.push({
+      index: innerIndex,
+      winnerIndex: outerIndex,
+      reason: "DOM descendant of card candidate",
+      ratio: 0,
+      delta: 0,
+      text: normalizeText(inner.text),
+      winnerText: normalizeText(outer.text)
+    });
+  }
+
+  kept.sort((a, b) => a.index - b.index);
+  rejected.sort((a, b) => a.index - b.index);
+
+  console.log(
+    `DOM containment dedupe: raw=${raw.length}, unique=${kept.length}, descendants=${rejected.length}`
+  );
+
+  return { kept, rejected };
+}
+
 async function inspectSelector(page, selector, c) {
   const raw = await plausible(page, selector, c);
-  const result = c.dedupeNestedCards === false
-    ? { kept: raw, rejected: [] }
-    : dedupeCandidates(raw);
+
+  let result;
+
+  if (c.dedupeNestedCards === false) {
+    result = { kept: raw, rejected: [] };
+  } else {
+    const domResult = await dedupeDomContainedCandidates(page, selector, raw);
+    result = domResult.rejected.length
+      ? domResult
+      : dedupeCandidates(raw);
+  }
 
   return {
     selector,
@@ -893,12 +1082,54 @@ async function enterLegacyBoardIfNeeded(page, c) {
 
 async function fullyLoadBoardByScrolling(page, c) {
   const maxPasses = Math.max(8, Number(c.legacyScrollMaxPasses) || 50);
-  const pause = Math.max(150, Number(c.legacyScrollPauseMs) || 350);
+  const pause = Math.max(120, Number(c.legacyScrollPauseMs) || 350);
 
   let stablePasses = 0;
   let lastSignature = "";
 
   for (let pass = 1; pass <= maxPasses; pass++) {
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await sleep(Math.min(300, pause));
+
+    let y = 0;
+    let stepCount = 0;
+
+    while (stepCount < 200) {
+      const state = await page.evaluate(() => {
+        const body = document.body;
+        const doc = document.documentElement;
+        return {
+          height: Math.max(
+            body ? body.scrollHeight : 0,
+            doc ? doc.scrollHeight : 0
+          ),
+          viewport: Math.max(300, window.innerHeight || 0),
+          y: window.scrollY || 0
+        };
+      });
+
+      const maxY = Math.max(0, state.height - state.viewport);
+      if (y >= maxY) break;
+
+      const step = Math.max(240, Math.floor(state.viewport * 0.72));
+      y = Math.min(maxY, y + step);
+
+      await page.evaluate(target => window.scrollTo(0, target), y);
+      await sleep(Math.max(120, Math.min(250, Math.round(pause * 0.6))));
+      stepCount++;
+    }
+
+    await page.evaluate(() => {
+      const body = document.body;
+      const doc = document.documentElement;
+      window.scrollTo(0, Math.max(
+        body ? body.scrollHeight : 0,
+        doc ? doc.scrollHeight : 0
+      ));
+    });
+
+    await sleep(pause);
+
     const labels = [
       /load more/i,
       /show more/i,
@@ -932,11 +1163,6 @@ async function fullyLoadBoardByScrolling(page, c) {
       const body = document.body;
       const doc = document.documentElement;
 
-      window.scrollTo(0, Math.max(
-        body ? body.scrollHeight : 0,
-        doc ? doc.scrollHeight : 0
-      ));
-
       const scrollers = [];
 
       for (const el of document.querySelectorAll("div,main,section")) {
@@ -946,7 +1172,6 @@ async function fullyLoadBoardByScrolling(page, c) {
           el.scrollHeight > el.clientHeight + 20;
 
         if (canScroll) {
-          el.scrollTop = el.scrollHeight;
           scrollers.push({
             h: el.scrollHeight,
             c: el.clientHeight,
@@ -968,8 +1193,6 @@ async function fullyLoadBoardByScrolling(page, c) {
       };
     });
 
-    await sleep(pause);
-
     const signature = JSON.stringify(metrics);
 
     if (signature === lastSignature) {
@@ -981,11 +1204,11 @@ async function fullyLoadBoardByScrolling(page, c) {
     lastSignature = signature;
 
     console.log(
-      `Legacy load pass ${pass}: cardish=${metrics.cardish}, ` +
+      `Board load sweep ${pass}: steps=${stepCount}, cardish=${metrics.cardish}, ` +
       `scrollContainers=${metrics.scrollers.length}, docHeight=${metrics.docHeight}`
     );
 
-    if (stablePasses >= 4) break;
+    if (pass >= 3 && stablePasses >= 2) break;
   }
 
   await sleep(Math.max(500, Number(c.legacyScrollFinalWaitMs) || 1500));
@@ -993,7 +1216,6 @@ async function fullyLoadBoardByScrolling(page, c) {
   await page.evaluate(() => window.scrollTo(0, 0));
   await sleep(300);
 }
-
 
 
 async function legacyBroadDetector(page, c) {
@@ -1143,7 +1365,14 @@ async function genericCardFallback(page, c) {
       if (!visible(el)) continue;
 
       const r = el.getBoundingClientRect();
-      if (r.width < minW || r.height < minH || r.width > maxW || r.height > maxH) continue;
+      const tallCardMaxWidth = Math.min(520, maxW);
+      const isTallCard =
+        r.width <= tallCardMaxWidth &&
+        r.height > maxH &&
+        r.height <= 1800;
+
+      if (r.width < minW || r.height < minH || r.width > maxW) continue;
+      if (r.height > maxH && !isTallCard) continue;
 
       const text = normalize(el.innerText);
       const imgs = el.querySelectorAll("img").length;
@@ -1304,6 +1533,275 @@ async function genericCardFallback(page, c) {
   return inspected;
 }
 
+async function unionCardFallback(page, c) {
+  const selectors = (c.autoSelectors || []).filter(Boolean);
+  if (!selectors.length) return null;
+
+  const taggedCount = await page.evaluate((selectorList) => {
+    document.querySelectorAll("[data-recocards-union-card]").forEach(el =>
+      el.removeAttribute("data-recocards-union-card")
+    );
+
+    const seen = new Set();
+    let index = 0;
+
+    for (const selector of selectorList) {
+      let nodes = [];
+      try {
+        nodes = [...document.querySelectorAll(selector)];
+      } catch (_) {
+        continue;
+      }
+
+      for (const node of nodes) {
+        if (seen.has(node)) continue;
+        seen.add(node);
+        node.setAttribute("data-recocards-union-card", String(index + 1));
+        index++;
+      }
+    }
+
+    return index;
+  }, selectors);
+
+  if (!taggedCount) return null;
+
+  const result = await inspectSelector(
+    page,
+    "[data-recocards-union-card]",
+    c
+  );
+
+  result.genericReport =
+    `union detector tagged=${taggedCount}, accepted=${result.list.length}`;
+
+  return result;
+}
+
+async function replyCardDetector(page, c) {
+  const taggedCount = await page.evaluate(cfg => {
+    const minW = Math.max(180, Number(cfg.minimumCardWidth) || 140);
+    const maxW = Math.max(520, Number(cfg.maximumCardWidth) || 1000);
+    const minH = Math.max(60, Number(cfg.minimumCardHeight) || 80);
+    const maxH = 2600;
+
+    document.querySelectorAll("[data-recocards-reply-card]").forEach(el =>
+      el.removeAttribute("data-recocards-reply-card")
+    );
+
+    const normalize = value =>
+      String(value || "").replace(/\s+/g, " ").trim();
+
+    const candidates = [];
+
+    for (const el of document.querySelectorAll("div,article,section,li")) {
+      const style = getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") continue;
+
+      const rect = el.getBoundingClientRect();
+      if (
+        rect.width < minW ||
+        rect.width > maxW ||
+        rect.height < minH ||
+        rect.height > maxH
+      ) continue;
+
+      const text = normalize(el.innerText);
+      if (!text) continue;
+
+      const replyMatches = text.match(/\bReply\b/gi) || [];
+      if (replyMatches.length !== 1) continue;
+
+      if (!/\bReply\s+(?:Like|\d+\s+likes?)\s*$/i.test(text)) continue;
+
+      candidates.push({
+        el,
+        area: rect.width * rect.height,
+        text
+      });
+    }
+
+    candidates.sort((a, b) => a.area - b.area);
+
+    const kept = [];
+
+    for (const candidate of candidates) {
+      const containsChosen = kept.some(
+        existing =>
+          candidate.el !== existing.el &&
+          candidate.el.contains(existing.el)
+      );
+
+      if (containsChosen) continue;
+
+      kept.push(candidate);
+    }
+
+    kept.sort((a, b) => {
+      const ar = a.el.getBoundingClientRect();
+      const br = b.el.getBoundingClientRect();
+      if (Math.abs(ar.y - br.y) > 8) return ar.y - br.y;
+      return ar.x - br.x;
+    });
+
+    kept.forEach((candidate, index) =>
+      candidate.el.setAttribute(
+        "data-recocards-reply-card",
+        String(index + 1)
+      )
+    );
+
+    return kept.length;
+  }, c);
+
+  if (!taggedCount) return null;
+
+  const result = await inspectSelector(
+    page,
+    "[data-recocards-reply-card]",
+    c
+  );
+
+  result.replyReport =
+    `reply-card detector tagged=${taggedCount}, accepted=${result.list.length}`;
+
+  return result;
+}
+
+async function angularCardComponentFallback(page, c) {
+  const groups = await page.evaluate(cfg => {
+    const minW = Math.max(80, Number(cfg.minimumCardWidth) || 140);
+    const minH = Math.max(40, Number(cfg.minimumCardHeight) || 80);
+    const maxW = Math.max(minW, Number(cfg.maximumCardWidth) || 1000);
+    const maxH = Math.max(1800, Number(cfg.maximumCardHeight) || 1000);
+    const skipPrefixes = ["mat-", "fa-", "ng-", "app-root", "app-header", "app-footer"];
+    const map = new Map();
+
+    for (const el of document.querySelectorAll("*")) {
+      const tag = String(el.tagName || "").toLowerCase();
+      if (!tag.includes("-")) continue;
+      if (skipPrefixes.some(prefix => tag === prefix || tag.startsWith(prefix))) continue;
+
+      const rect = el.getBoundingClientRect();
+      if (rect.width < minW || rect.height < minH) continue;
+      if (rect.width > maxW || rect.height > maxH) continue;
+
+      const style = getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") continue;
+
+      const text = String(el.innerText || "").replace(/\s+/g, " ").trim();
+      const mediaCount = el.querySelectorAll("img,video,canvas").length;
+      if (text.length < 2 && mediaCount === 0) continue;
+
+      if (!map.has(tag)) {
+        map.set(tag, {
+          tag,
+          count: 0,
+          media: 0,
+          textTotal: 0,
+          areaTotal: 0,
+          uniqueTexts: new Set()
+        });
+      }
+
+      const group = map.get(tag);
+      group.count++;
+      group.media += mediaCount > 0 ? 1 : 0;
+      group.textTotal += Math.min(text.length, 4000);
+      group.areaTotal += Math.min(rect.width * rect.height, 900000);
+      if (text) group.uniqueTexts.add(text.toLowerCase());
+    }
+
+    return [...map.values()]
+      .map(group => ({
+        tag: group.tag,
+        count: group.count,
+        media: group.media,
+        avgText: group.count ? group.textTotal / group.count : 0,
+        avgArea: group.count ? group.areaTotal / group.count : 0,
+        uniqueTextCount: group.uniqueTexts.size
+      }))
+      .filter(group => group.count >= 8 && group.count <= 160)
+      .sort((a, b) => {
+        const tagBonusA = /(card|message|post|sign|wish|entry)/.test(a.tag) ? 5000 : 0;
+        const tagBonusB = /(card|message|post|sign|wish|entry)/.test(b.tag) ? 5000 : 0;
+        const scoreA =
+          tagBonusA +
+          a.uniqueTextCount * 120 +
+          a.media * 40 +
+          Math.min(2500, a.avgText) +
+          Math.min(2500, a.avgArea / 100);
+        const scoreB =
+          tagBonusB +
+          b.uniqueTextCount * 120 +
+          b.media * 40 +
+          Math.min(2500, b.avgText) +
+          Math.min(2500, b.avgArea / 100);
+        return scoreB - scoreA;
+      })
+      .slice(0, 12);
+  }, c);
+
+  if (!groups.length) return null;
+
+  console.log(
+    "Angular component candidates: " +
+    groups.map(g =>
+      `${g.tag}=${g.count}/${g.uniqueTextCount} unique`
+    ).join(", ")
+  );
+
+  let best = null;
+
+  for (const group of groups) {
+    const raw = await plausible(page, group.tag, c);
+    if (raw.length < 8) continue;
+
+    const seen = new Set();
+    const kept = [];
+    const rejected = [];
+
+    for (const candidate of raw) {
+      const key = normalizeMatchText(candidate.text || "");
+      if (key && seen.has(key)) {
+        rejected.push({
+          index: candidate.index,
+          reason: "exact component text duplicate",
+          text: normalizeText(candidate.text).slice(0, 160)
+        });
+        continue;
+      }
+      if (key) seen.add(key);
+      kept.push(candidate);
+    }
+
+    const mediaCards = kept.filter(x => x.imgCount > 0).length;
+    const uniqueRatio = kept.length / Math.max(1, raw.length);
+    const tagBonus = /(card|message|post|sign|wish|entry)/.test(group.tag) ? 10000 : 0;
+    const score =
+      tagBonus +
+      kept.length * 300 +
+      mediaCards * 20 +
+      Math.round(uniqueRatio * 1000);
+
+    const candidate = {
+      selector: group.tag,
+      raw,
+      list: kept,
+      rejected,
+      score,
+      angularReport:
+        `${group.tag} raw=${raw.length} unique=${kept.length} media=${mediaCards}`
+    };
+
+    if (!best || candidate.score > best.score) {
+      best = candidate;
+    }
+  }
+
+  return best;
+}
+
 async function chooseSelector(page, c) {
   if ((c.cardSelector || "").trim()) {
     const s = c.cardSelector.trim();
@@ -1312,6 +1810,30 @@ async function chooseSelector(page, c) {
       throw new Error(`cardSelector '${s}' found no plausible Recocards.`);
     }
     return result;
+  }
+
+  // The current RecoCards board renders one post per mat-card. Select that
+  // component directly: content-based deduplication can discard separate posts
+  // whose messages happen to be identical or nearly identical.
+  const componentSelector = "mat-card.example-card";
+  const componentCount = await page.locator(componentSelector).count();
+  if (componentCount >= 20) {
+    const componentCards = await plausible(page, componentSelector, c);
+    const replyCount = await page.getByRole("button", { name: /^Reply$/ }).count();
+    if (componentCards.length === componentCount && componentCount === replyCount) {
+      console.log(`Using RecoCards post components: ${componentCount} cards`);
+      return {
+        selector: componentSelector,
+        raw: componentCards,
+        list: componentCards,
+        rejected: []
+      };
+    }
+    throw new Error(
+      `RecoCards component coverage incomplete: components=${componentCount}, ` +
+      `plausible=${componentCards.length}, replyButtons=${replyCount}. ` +
+      `No partial card set will be generated.`
+    );
   }
 
   let best = null;
@@ -1333,38 +1855,62 @@ async function chooseSelector(page, c) {
     /\/view\/b\//i.test(page.url()) ||
     /\/view\/b\//i.test(c.url || "");
 
-  let generic = null;
+  let replyCards = await replyCardDetector(page, c);
+  let angular = await angularCardComponentFallback(page, c);
+  let generic = await genericCardFallback(page, c);
+  let union = await unionCardFallback(page, c);
   let broad = null;
 
   if (isLegacy) {
-    generic = await genericCardFallback(page, c);
     broad = await legacyBroadDetector(page, c);
-
-    console.log(
-      `Detection comparison: named=${best ? best.list.length : 0}, ` +
-      `generic=${generic ? generic.list.length : 0}, ` +
-      `legacyBroad=${broad ? broad.list.length : 0}`
-    );
-
-    const options = [best, generic, broad].filter(
-      x => x && x.list && x.list.length
-    );
-
-    options.sort((a,b) => b.list.length-a.list.length);
-
-    if (options.length) return options[0];
   }
 
-  if (!best || !best.list.length) {
-    const fallback = generic || await genericCardFallback(page, c);
-    if (fallback && fallback.list.length) return fallback;
+  console.log(
+    `Detection comparison: replyCards=${replyCards ? replyCards.list.length : 0}, ` +
+    `angular=${angular ? angular.list.length : 0}, ` +
+    `named=${best ? best.list.length : 0}, ` +
+    `generic=${generic ? generic.list.length : 0}, ` +
+    `union=${union ? union.list.length : 0}, ` +
+    `legacyBroad=${broad ? broad.list.length : 0}`
+  );
 
-    throw new Error(
-      "No Recocards detected. See debug-page.png/card_detection.txt."
-    );
+  const configuredMaxCards = Math.max(1, Number(c.maxCards) || 100);
+
+  if (
+    replyCards &&
+    replyCards.list &&
+    replyCards.list.length >= 20 &&
+    replyCards.list.length <= configuredMaxCards
+  ) {
+    console.log(`Using Reply-card detector: ${replyCards.replyReport}`);
+    return replyCards;
   }
 
-  return best;
+  if (
+    angular &&
+    angular.list &&
+    angular.list.length >= 20 &&
+    angular.list.length <= configuredMaxCards
+  ) {
+    console.log(`Using Angular card component: ${angular.angularReport}`);
+    return angular;
+  }
+
+  const options = [best, generic, union, broad].filter(
+    x =>
+      x &&
+      x.list &&
+      x.list.length &&
+      x.list.length <= configuredMaxCards
+  );
+
+  options.sort((a, b) => b.list.length - a.list.length);
+
+  if (options.length) return options[0];
+
+  throw new Error(
+    "No Recocards detected. See debug-page.png/card_detection.txt."
+  );
 }
 
 
@@ -1682,6 +2228,7 @@ function getAnimationCaptureConfig(c, author) {
         fps,
         duration,
         maxFrames,
+        forceAnimated: value.forceAnimated === true,
         frameCount: Math.max(2, Math.min(maxFrames, Math.round(fps * duration)))
       };
     }
@@ -1691,8 +2238,17 @@ function getAnimationCaptureConfig(c, author) {
     fps: baseFps,
     duration: baseDuration,
     maxFrames: baseMaxFrames,
+    forceAnimated: false,
     frameCount: Math.max(2, Math.min(baseMaxFrames, Math.round(baseFps * baseDuration)))
   };
+}
+
+function isGifUrl(url) {
+  try {
+    return /\.gif$/i.test(new URL(String(url)).pathname);
+  } catch (_) {
+    return /\.gif(?:$|[?#])/i.test(String(url || ""));
+  }
 }
 
 async function captureAnimatedFrames(el, id, c, captureScale, author) {
@@ -1793,10 +2349,12 @@ function cleanup(validFiles) {
 
       const legacyOpened = await enterLegacyBoardIfNeeded(page, c);
 
-      if (legacyOpened) {
-        console.log("Legacy board: scrolling through full board to load all entries...");
-        await fullyLoadBoardByScrolling(page, c);
-      }
+      console.log(
+        legacyOpened
+          ? "Legacy board: scrolling through full board to load all entries..."
+          : "Board: scrolling through full board to load all entries..."
+      );
+      await fullyLoadBoardByScrolling(page, c);
 
       const boardData =
         await discoverBoardPosts(
@@ -1844,6 +2402,11 @@ function cleanup(validFiles) {
       }
 
       const previous = loadPreviousManifest();
+      const animationCacheVersionFile = path.join(OUT, "animation_detection_version.txt");
+      const animationCacheVersion = "2";
+      const previousAnimationCacheVersion = fs.existsSync(animationCacheVersionFile)
+        ? fs.readFileSync(animationCacheVersionFile, "utf8").trim()
+        : "";
       const cards = [];
       const used = new Set();
       const validFiles = [];
@@ -1884,9 +2447,36 @@ function cleanup(validFiles) {
         reportLines.push("");
       }
 
-      for (const x of chosen.rejected) {
+      reportLines.push("RAW DOM CANDIDATES:");
+      chosen.raw.forEach((x, idx) => {
         reportLines.push(
-          `REJECT index=${x.index} reason=${x.reason} text=${x.text}`
+          `RAW ${idx + 1} domIndex=${x.index} size=${Math.round(x.box.width)}x${Math.round(x.box.height)} ` +
+          `images=${x.imgCount} authorGuess=${authorFromCandidate(x)} text=${normalizeText(x.text).slice(0, 700)}`
+        );
+      });
+
+      reportLines.push("");
+      reportLines.push("REJECTED DUPLICATE COMPARISONS:");
+
+      for (const x of chosen.rejected) {
+        const rejectedCandidate = chosen.raw.find(row => row.index === x.index);
+        const winnerCandidate = chosen.raw.find(row => row.index === x.winnerIndex);
+
+        reportLines.push(
+          `REJECT domIndex=${x.index} keptDomIndex=${x.winnerIndex ?? "NONE"} ` +
+          `reason=${x.reason} ratio=${Number(x.ratio || 0).toFixed(4)} delta=${x.delta ?? ""}`
+        );
+        reportLines.push(
+          `  REJECT_AUTHOR=${rejectedCandidate ? authorFromCandidate(rejectedCandidate) : ""}`
+        );
+        reportLines.push(
+          `  KEPT_AUTHOR=${winnerCandidate ? authorFromCandidate(winnerCandidate) : ""}`
+        );
+        reportLines.push(
+          `  REJECT_TEXT=${normalizeText(x.text || "").slice(0, 1200)}`
+        );
+        reportLines.push(
+          `  KEPT_TEXT=${normalizeText(x.winnerText || "").slice(0, 1200)}`
         );
       }
 
@@ -1894,7 +2484,8 @@ function cleanup(validFiles) {
       reportLines.push("ACCEPTED DOM CANDIDATES:");
       chosen.list.forEach((x, idx) => {
         reportLines.push(
-          `ACCEPT ${idx + 1} domIndex=${x.index} size=${Math.round(x.box.width)}x${Math.round(x.box.height)} images=${x.imgCount} text=${normalizeText(x.text).slice(0, 180)}`
+          `ACCEPT ${idx + 1} domIndex=${x.index} size=${Math.round(x.box.width)}x${Math.round(x.box.height)} ` +
+          `images=${x.imgCount} authorGuess=${authorFromCandidate(x)} text=${normalizeText(x.text).slice(0, 700)}`
         );
       });
 
@@ -1942,7 +2533,31 @@ function cleanup(validFiles) {
           const staticFilename = `card_${id}.png`;
           const cached = previous.get(id);
 
-          if (c.reuseCachedCards !== false && cachedFilesExist(cached)) {
+          const mediaHints = await el.evaluate(node => {
+            const imgs = [...node.querySelectorAll("img")];
+            const hasGifUrl = imgs.some(img => /\.gif(?:$|[?#])/i.test(img.currentSrc || img.src || ""));
+            const hasVideo = node.querySelector("video") !== null;
+            const hasCanvas = node.querySelector("canvas") !== null;
+            return { hasGifUrl, hasVideo, hasCanvas, imageCount: imgs.length };
+          }).catch(() => ({ hasGifUrl:false, hasVideo:false, hasCanvas:false, imageCount:0 }));
+          const domAuthor = authorFromCandidate(src);
+          const animationAuthor = domAuthor === "Anonymous" ? cardAuthor : domAuthor;
+          const animationConfig = getAnimationCaptureConfig(c, animationAuthor);
+          const hasGif = mediaHints.hasGifUrl || (src.mediaUrls || []).some(isGifUrl);
+          const forceAnimated = animationConfig.forceAnimated || hasGif;
+          const cacheHasRequiredAnimation = !forceAnimated || (
+            cached && cached.frameCount > 1 &&
+            (!animationConfig.forceAnimated || (
+              cached.frameCount === animationConfig.frameCount &&
+              cached.fps === animationConfig.fps
+            ))
+          );
+          const cacheHasCurrentDetection =
+            !cached || cached.frameCount > 1 || mediaHints.imageCount === 0 ||
+            previousAnimationCacheVersion === animationCacheVersion;
+
+          if (c.reuseCachedCards !== false && cacheHasRequiredAnimation &&
+              cacheHasCurrentDetection && cachedFilesExist(cached)) {
             const reused = {
               order: j + 1,
               id,
@@ -1983,23 +2598,14 @@ function cleanup(validFiles) {
 
           validFiles.push(staticFilename);
 
-          const mediaHints = await el.evaluate(node => {
-            const imgs = [...node.querySelectorAll("img")];
-            const hasGifUrl = imgs.some(img => /\.gif(?:$|[?#])/i.test(img.currentSrc || img.src || ""));
-            const hasVideo = node.querySelector("video") !== null;
-            const hasCanvas = node.querySelector("canvas") !== null;
-            return { hasGifUrl, hasVideo, hasCanvas, imageCount: imgs.length };
-          }).catch(() => ({ hasGifUrl:false, hasVideo:false, hasCanvas:false, imageCount:0 }));
-
           const shouldProbeAnimation =
-            mediaHints.hasGifUrl ||
             mediaHints.hasVideo ||
             mediaHints.hasCanvas ||
             mediaHints.imageCount > 0;
 
-          const animated = shouldProbeAnimation
+          const animated = forceAnimated || (shouldProbeAnimation
             ? await detectAnimation(el, c)
-            : false;
+            : false);
 
           if (animated) {
             const anim = await captureAnimatedFrames(
@@ -2007,7 +2613,7 @@ function cleanup(validFiles) {
               id,
               c,
               captureScale,
-              cardAuthor
+              animationAuthor
             );
 
             validFiles.push(...anim.files);
@@ -2025,7 +2631,8 @@ function cleanup(validFiles) {
             });
 
             reportLines.push(
-              `CARD ${j + 1} id=${id} animated=yes frames=${anim.frameCount} fps=${anim.fps} author=${manifestSafe(cardAuthor)}`
+              `CARD ${j + 1} id=${id} animated=yes frames=${anim.frameCount} fps=${anim.fps} ` +
+              `source=${animationConfig.forceAnimated ? "override" : hasGif ? "gif" : "probe"} author=${manifestSafe(cardAuthor)}`
             );
 
             console.log(
@@ -2053,8 +2660,18 @@ function cleanup(validFiles) {
         }
       }
 
-      if (!cards.length) {
-        throw new Error("0 Cards saved.");
+      if (cards.length !== captureTarget) {
+        reportLines.push(
+          `CAPTURE_FAILED expected=${captureTarget} actual=${cards.length}`
+        );
+        atomicWrite(
+          path.join(OUT, "card_detection.txt"),
+          reportLines.join("\n") + "\n"
+        );
+        throw new Error(
+          `Only ${cards.length} of ${captureTarget} cards captured; ` +
+          `keeping the previous manifest. See card_detection.txt.`
+        );
       }
 
       const manifest =
@@ -2115,6 +2732,8 @@ function cleanup(validFiles) {
         path.join(OUT, "board_data_detection.txt"),
         boardDataLines.join("\n") + "\n"
       );
+
+      atomicWrite(animationCacheVersionFile, animationCacheVersion + "\n");
 
       cleanup(validFiles);
 
