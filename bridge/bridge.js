@@ -1820,7 +1820,10 @@ async function chooseSelector(page, c) {
   if (componentCount >= 20) {
     const componentCards = await plausible(page, componentSelector, c);
     const replyCount = await page.getByRole("button", { name: /^Reply$/ }).count();
-    if (componentCards.length === componentCount && componentCount === replyCount) {
+    // Closed/read-only boards may hide every Reply action while keeping the
+    // same card components visible. A partial Reply set is still suspicious.
+    if (componentCards.length === componentCount &&
+        (replyCount === 0 || componentCount === replyCount)) {
       console.log(`Using RecoCards post components: ${componentCount} cards`);
       return {
         selector: componentSelector,
