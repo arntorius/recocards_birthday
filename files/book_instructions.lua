@@ -50,10 +50,10 @@ return {
     {
         title = "Birthday Theme",
         lines = {
-            "Glimmer spells",
+            "Glimmer & Meme spells",
             "Birthday themed Glimmer variant",
-            "for starter wands and normal spell",
-            "pool",
+            "Holy Mountain expansion, get 2",
+            "free Meme spells each HM",
             "",
             "Celebratium Potion",
             "Confetti !!!",
