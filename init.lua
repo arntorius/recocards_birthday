@@ -7,6 +7,11 @@ dofile_once("mods/recocards_birthday/files/mortal_kombat/arcade.lua")
 dofile_once("mods/recocards_birthday/files/rhythm_arcade/arcade.lua")
 dofile_once("mods/recocards_birthday/files/celebratium/celebratium.lua")
 dofile_once("mods/recocards_birthday/files/trial_of_the_gods/trial.lua")
+dofile_once("mods/recocards_birthday/spells/spells.lua")
+RECO_SPELL_INIT = true
+dofile("mods/recocards_birthday/spells/actions.lua")
+RECO_SPELL_INIT = nil
+ModLuaFileAppend("data/scripts/gun/gun_actions.lua", "mods/recocards_birthday/spells/actions.lua")
 
 -- === Moist Mobbing wiring (ported from the sweatlingTest POC) ================
 -- Reusable debug logger (consumer side lives here; init.lua has `io`). Producers
@@ -2028,6 +2033,7 @@ function OnWorldInitialized()
 end
 
 function OnWorldPostUpdate()
+    
     if not spawned and GameGetFrameNum()%60 == 0 then
         build_quest()
     end
