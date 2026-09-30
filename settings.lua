@@ -11,6 +11,7 @@
 --                              match ANY sender + self-typable sub/gift triggers
 --                              + auto-play the recorded dnkM burst. OFF = LIVE
 --                              (real bot detection, no auto-replay).
+--   * dev_mode              -> show the in-world dev-tools overlay. OFF by default.
 
 dofile("data/scripts/lib/mod_settings.lua")  -- Mk_* helpers + ModSettings* API
 
@@ -88,6 +89,16 @@ mod_settings = {
         ui_name = "Trial of the Gods: Require Sampo",
         ui_description = "Require the Sampo to activate the Trial of the Gods entrance portal.",
         value_default = true,
+        scope = MOD_SETTING_SCOPE_RUNTIME,
+    },
+    {
+        id = "dev_mode",
+        ui_name = "Enable Dev Tools",
+        ui_description =
+            "Show the in-world developer overlay (manifest count, teleport-to-card,\n" ..
+            "and other debug buttons). Leave OFF for normal play.\n" ..
+            "Relaunch to apply changes.",
+        value_default = false,
         scope = MOD_SETTING_SCOPE_RUNTIME,
     },
 }
