@@ -1480,9 +1480,11 @@ local function nearest_undiscovered_card()
 end
 
 local function update_dev_tools()
-    local cfg = get_cached_config()
-    if tonumber(cfg.dev_mode) ~= 1 then return end
+    -- Dev tools are gated by the mod setting (Options -> Mods), OFF by default --
+    -- no longer the bridge/quest_config.txt dev_mode.
+    if ModSettingGet("recocards_birthday.dev_mode") ~= true then return end
 
+    local cfg = get_cached_config()
     local hx = tonumber(cfg.hud_x) or 16
     local hy = tonumber(cfg.hud_y) or 58
 
